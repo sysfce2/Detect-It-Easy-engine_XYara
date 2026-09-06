@@ -39,6 +39,15 @@ QString yaraString(const char *pString)
     return QString::fromUtf8(pString ? pString : "");
 }
 
+XYara::SCAN_RESULT finalizeScan(XYara::SCAN_RESULT *pScanResult, const QElapsedTimer &scanTimer, XBinary::PDSTRUCT *pPdStruct, qint32 *pnFreeIndex)
+{
+    pScanResult->nScanTime = scanTimer.elapsed();
+    XBinary::setPdStructFinished(pPdStruct, *pnFreeIndex);
+    *pnFreeIndex = -1;
+
+    return *pScanResult;
+}
+
 class CompilerGuard {
 public:
     ~CompilerGuard()
@@ -177,18 +186,11 @@ XYara::SCAN_RESULT XYara::scanFile(const QString &sFileName, const QString &sFil
     const QString sRulesPath = XOptions::convertPathName(sFileNameOrDirectory);
     const QString sScanFileName = XOptions::convertPathName(sFileName);
 
-    const auto finalizeScan = [&]() -> SCAN_RESULT {
-        m_scanResult.nScanTime = scanTimer.elapsed();
-        XBinary::setPdStructFinished(m_pPdStruct, m_nFreeIndex);
-        m_nFreeIndex = -1;
-        return m_scanResult;
-    };
-
     CompilerGuard compiler;
 
     if (yr_compiler_create(&compiler.pCompiler) != ERROR_SUCCESS) {
         _reportError(QString(), tr("Cannot create YARA compiler"));
-        return finalizeScan();
+        return finalizeScan(&m_scanResult, scanTimer, m_pPdStruct, &m_nFreeIndex);
     }
 
     yr_compiler_set_callback(compiler.pCompiler, &XYara::_callbackCheckRules, this);
@@ -212,26 +214,26 @@ XYara::SCAN_RESULT XYara::scanFile(const QString &sFileName, const QString &sFil
 
         if (nLoadedRuleFiles == 0) {
             _reportError(sRulesPath, tr("No YARA rules were loaded"));
-            return finalizeScan();
+            return finalizeScan(&m_scanResult, scanTimer, m_pPdStruct, &m_nFreeIndex);
         }
     } else if (rulesPathInfo.isFile()) {
         const QString sBaseName = rulesPathInfo.baseName();
 
         if (!_handleRulesFile(compiler.pCompiler, sRulesPath, sBaseName)) {
-            return finalizeScan();
+            return finalizeScan(&m_scanResult, scanTimer, m_pPdStruct, &m_nFreeIndex);
         }
 
         m_mapFileNames.insert(sBaseName, sRulesPath);
     } else {
         _reportError(sRulesPath, tr("YARA rules path not found"));
-        return finalizeScan();
+        return finalizeScan(&m_scanResult, scanTimer, m_pPdStruct, &m_nFreeIndex);
     }
 
     RulesGuard rules;
 
     if (yr_compiler_get_rules(compiler.pCompiler, &rules.pRules) != ERROR_SUCCESS || (rules.pRules == nullptr)) {
         _reportError(sRulesPath, tr("Cannot build YARA rules"));
-        return finalizeScan();
+        return finalizeScan(&m_scanResult, scanTimer, m_pPdStruct, &m_nFreeIndex);
     }
 
     _setProgressTotal(rules.pRules->num_rules);
@@ -240,7 +242,7 @@ XYara::SCAN_RESULT XYara::scanFile(const QString &sFileName, const QString &sFil
 
     if (!fileHandle.isValid()) {
         _reportError(sScanFileName, tr("Cannot open scan target"));
-        return finalizeScan();
+        return finalizeScan(&m_scanResult, scanTimer, m_pPdStruct, &m_nFreeIndex);
     }
 
     const int nResult = yr_rules_scan_fd(rules.pRules, fileHandle.handle(), YARA_SCAN_FLAGS, &XYara::_callbackScan, this, 0);
@@ -249,7 +251,7 @@ XYara::SCAN_RESULT XYara::scanFile(const QString &sFileName, const QString &sFil
         _reportError(sScanFileName, QString("%1: %2").arg(tr("YARA scan failed")).arg(QString::number(nResult)));
     }
 
-    return finalizeScan();
+    return finalizeScan(&m_scanResult, scanTimer, m_pPdStruct, &m_nFreeIndex);
 }
 
 void XYara::setData(const QString &sFileName, const QString &sRulesPath, XBinary::PDSTRUCT *pPdStruct)
